@@ -34,6 +34,8 @@ TWILIO_TTS_MODE = os.environ.get("TWILIO_TTS_MODE", "gemini").strip().lower()  #
 TWILIO_VOICE = os.environ.get("TWILIO_VOICE", "Polly.Miguel")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_API_KEY_SID = os.environ.get("TWILIO_API_KEY_SID", "").strip()
+TWILIO_API_KEY_SECRET = os.environ.get("TWILIO_API_KEY_SECRET", "").strip()
 TWILIO_STREAM_WSS_URL = os.environ.get("TWILIO_STREAM_WSS_URL", "").strip()
 LOG_FRAMES_EVERY = int(os.environ.get("LOG_FRAMES_EVERY", "50").strip() or 50)
 
@@ -230,11 +232,27 @@ async def voice_stream(ws: WebSocket):
             return f"Historial de la llamada hasta ahora:\n{history}\n\nUsuario: {user_text}"
         return user_text
 
+    # Helper: construir cliente Twilio con API Key si está disponible (recomendado) o con Auth Token
+    def _get_twilio_client() -> TwilioClient:
+        if TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET and TWILIO_ACCOUNT_SID:
+            logger.info(
+                "Inicializando TwilioClient con API Key (sid=****%s, account=****%s)",
+                TWILIO_API_KEY_SID[-6:],
+                TWILIO_ACCOUNT_SID[-6:],
+            )
+            return TwilioClient(TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET, account_sid=TWILIO_ACCOUNT_SID)
+        logger.info(
+            "Inicializando TwilioClient con Auth Token (account=****%s)",
+            (TWILIO_ACCOUNT_SID[-6:] if TWILIO_ACCOUNT_SID else "??????"),
+        )
+        return TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
     # Helper: actualizar TwiML de la llamada para hablar con Twilio <Say> y reconectar el Stream
     async def _twilio_say_and_restream(say_text: str):
         if not call_sid:
             return
-        if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
+        # Requerimos al menos Account SID y (Auth Token o API Key)
+        if not TWILIO_ACCOUNT_SID or not (TWILIO_AUTH_TOKEN or (TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET)):
             raise RuntimeError("twilio_credentials_missing")
         if not TWILIO_STREAM_WSS_URL:
             raise RuntimeError("twilio_stream_url_missing")
@@ -249,7 +267,7 @@ async def voice_stream(ws: WebSocket):
 """.strip()
 
         def _update():
-            client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            client = _get_twilio_client()
             client.calls(str(call_sid)).update(twiml=twiml)
 
         logger.info("Twilio <Say> + re-<Stream> → callSid=%s, voice=%s, chars=%d", call_sid, TWILIO_VOICE, len(say_text))
@@ -404,7 +422,16 @@ async def voice_stream(ws: WebSocket):
                             await live.send(input=types.LiveClientRealtimeInput(activity_start=types.ActivityStart()))
                         except Exception:
                             pass
-                        await _twilio_say_and_restream(greeting)
+                        try:
+                            await _twilio_say_and_restream(greeting)
+                        except Exception as tex:
+                            # Si falla autenticación o permisos, hacemos fallback inmediato a Gemini TTS para no dejar silencio
+                            logger.warning("No se pudo enviar saludo con Twilio (<Say>): %s. Fallback a Gemini TTS.", tex)
+                            ulaw_greet = await tts_mulaw_8k(greeting)
+                            await ws.send_text(json.dumps({
+                                "event":"media","streamSid":stream_sid,
+                                "media":{"payload": base64.b64encode(ulaw_greet).decode()}
+                            }))
                     else:
                         ulaw_greet = await tts_mulaw_8k(greeting)
                         await ws.send_text(json.dumps({
@@ -473,3 +500,22 @@ async def list_live_models():
         return {"models": names}
     except Exception as e:
         return {"error": str(e)}
+
+# Endpoint de diagnóstico: verifica credenciales Twilio haciendo una llamada simple a la API
+@app.get("/twilio-auth-check")
+async def twilio_auth_check():
+    try:
+        client = TwilioClient(TWILIO_API_KEY_SID, TWILIO_API_KEY_SECRET, account_sid=TWILIO_ACCOUNT_SID) \
+                 if (TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET and TWILIO_ACCOUNT_SID) \
+                 else TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+        # Prueba liviana: obtener la cuenta y listar 1 llamada
+        acct = client.api.accounts(TWILIO_ACCOUNT_SID).fetch()
+        calls = client.calls.list(limit=1)
+        return {
+            "ok": True,
+            "account_sid": getattr(acct, 'sid', None),
+            "using_api_key": bool(TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET),
+            "last_call_sid": calls[0].sid if calls else None,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e), "account_sid": TWILIO_ACCOUNT_SID[-6:] if TWILIO_ACCOUNT_SID else None}
