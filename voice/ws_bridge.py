@@ -1,5 +1,5 @@
-import os, json, base64, asyncio, struct
-from typing import Optional, Any, Dict
+import os, json, base64, asyncio, struct, io, wave
+from typing import Optional, Any, Dict, cast
 from fastapi import FastAPI, WebSocket
 from adk_agent.agent import root_agent
 from google import genai
@@ -71,7 +71,7 @@ def downsample_24k_to_8k(pcm16_24k: bytes) -> bytes:
 
 # Conexión Live API se maneja como context manager en el handler
 async def tts_mulaw_8k(text: str) -> bytes:
-    # Solicita AUDIO en PCM (por defecto 24k) y conviértelo a μ-law 8k para Twilio
+    # Solicita AUDIO y conviértelo a μ-law 8k para Twilio (detectando formato)
     resp = GENAI.models.generate_content(
         model=TTS_MODEL,
         contents=text,
@@ -84,19 +84,89 @@ async def tts_mulaw_8k(text: str) -> bytes:
             ),
         ),
     )
-    # Extrae bytes de audio (inline_data)
+    # Extrae bytes de audio (inline_data) y su mime_type si está presente
     try:
-        data = resp.candidates[0].content.parts[0].inline_data.data
+        part = resp.candidates[0].content.parts[0]
+        blob = getattr(part, 'inline_data', None)  # type: ignore[attr-defined]
+        data = getattr(blob, 'data', None)
+        mime = getattr(blob, 'mime_type', None)
     except Exception:
         # fallback aproximado a otras formas
-        data = getattr(resp, 'text', b'')
+        data, mime = getattr(resp, 'text', b''), None
     if isinstance(data, str):
         try:
             data = base64.b64decode(data)
         except Exception:
             data = data.encode('utf-8')
-    pcm24k = bytes(data or b"")
-    pcm8k = downsample_24k_to_8k(pcm24k)
+
+    raw = bytes(data or b"")
+    # Si es WAV, parsea cabecera y obtén PCM16 + sample rate real
+    pcm16: bytes
+    sr: int
+    if (mime or '').lower() in ("audio/wav", "audio/x-wav") or (raw[:4] == b'RIFF' and raw[8:12] == b'WAVE'):
+        with wave.open(io.BytesIO(raw), 'rb') as wf:
+            sr = wf.getframerate()
+            sampwidth = wf.getsampwidth()
+            nch = wf.getnchannels()
+            frames = wf.readframes(wf.getnframes())
+            # Requiere PCM16 mono; si no, intenta fallback simple
+            if sampwidth != 2:
+                # convertir a 16-bit truncando/extendiendo (simple y ruidoso, pero mejor que nada)
+                if sampwidth == 1:
+                    pcm16 = b''.join(struct.pack('<h', (b-128)<<8) for b in frames)
+                else:
+                    # si 24-bit, toma los 2 bytes menos significativos (asumiendo 3 bytes por muestra)
+                    pcm16 = bytearray()
+                    for i in range(0, len(frames), 3):
+                        # tomar low y mid byte
+                        if i+2 <= len(frames):
+                            pcm16 += frames[i:i+2]
+                    pcm16 = bytes(pcm16)
+            else:
+                pcm16 = frames
+            if nch == 2:
+                # mezclar a mono promediando canales (simple, sin audioop)
+                mono = bytearray()
+                it = struct.iter_unpack('<hh', pcm16)
+                for (l, r) in it:
+                    m = (l + r) // 2
+                    mono += struct.pack('<h', m)
+                pcm16 = bytes(mono)
+    else:
+        # Asumimos PCM lineal 16-bit LE a 24000 Hz por defecto de TTS
+        pcm16 = raw
+        sr = 24000
+
+    # Downsample genérico a 8000 Hz (decimación si múltiplo, si no, interpolación lineal)
+    def downsample_to_8k(pcm: bytes, src_hz: int) -> bytes:
+        if src_hz == 8000:
+            return pcm
+        if src_hz % 8000 == 0:
+            factor = src_hz // 8000
+            out = bytearray()
+            i = 0
+            n = len(pcm)
+            step = 2 * factor
+            while i + 2 <= n:
+                out += pcm[i:i+2]
+                i += step
+            return bytes(out)
+    # Interpolación lineal simple
+        samples = [s for (s,) in struct.iter_unpack('<h', pcm)]
+        out = bytearray()
+        ratio = src_hz / 8000.0
+        out_len = int(len(samples) / ratio)
+        for i in range(out_len):
+            src_pos = i * ratio
+            j = int(src_pos)
+            a = samples[j]
+            b = samples[j+1] if j+1 < len(samples) else a
+            t = src_pos - j
+            val = int(a + (b - a) * t)
+            out += struct.pack('<h', val)
+        return bytes(out)
+
+    pcm8k = downsample_to_8k(pcm16, sr)
     return pcm16_to_mulaw(pcm8k)
 
 BIAS = 0x84  # 132
@@ -162,9 +232,22 @@ async def voice_stream(ws: WebSocket):
                 recv = getattr(live, "receive", None)
                 if callable(recv):
                     logger.info("Live session soporta receive(); iniciando pump de eventos.")
-                    while True:
-                        ev = await recv()
-                        await events_q.put(ev)
+                    try:
+                        agen = recv()
+                        # Si devuelve un async generator, iteramos sobre él
+                        if hasattr(agen, '__aiter__'):
+                            async for ev in agen:
+                                await events_q.put(ev)
+                        else:
+                            # Si fuese un awaitable que entrega un evento, caemos a bucle
+                            while True:
+                                ev = await agen
+                                await events_q.put(ev)
+                    except TypeError:
+                        # Versión que requiere await recv() cada vez
+                        while True:
+                            ev = await recv()
+                            await events_q.put(ev)
                 elif hasattr(live, "__aiter__"):
                     logger.info("Live session es async-iterable; iniciando pump de eventos.")
                     async for ev in live:
@@ -250,12 +333,20 @@ async def voice_stream(ws: WebSocket):
                             reply = "Gracias. ¿Podrías repetir o darme más detalles?"
                         logger.info("Agent reply len=%d", len(reply))
 
-                        # TTS μ-law 8k y retorna a Twilio
+                        # TTS μ-law 8k y retorna a Twilio (en frames de ~20ms para mejor calidad)
                         ulaw8k = await tts_mulaw_8k(reply)
-                        await ws.send_text(json.dumps({
-                            "event":"media","streamSid":stream_sid,
-                            "media":{"payload": base64.b64encode(ulaw8k).decode()}
-                        }))
+                        frame = 160  # 20ms a 8kHz = 160 muestras μ-law (1 byte/muestra)
+                        pos = 0
+                        total = len(ulaw8k)
+                        while pos < total:
+                            chunk = ulaw8k[pos:pos+frame]
+                            await ws.send_text(json.dumps({
+                                "event":"media","streamSid":stream_sid,
+                                "media":{"payload": base64.b64encode(chunk).decode()}
+                            }))
+                            pos += frame
+                            # Ceder control para no saturar el socket
+                            await asyncio.sleep(0)
                         await ws.send_text(json.dumps({
                             "event":"mark","streamSid":stream_sid,
                             "mark":{"name":"resp_done"}
