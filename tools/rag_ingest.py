@@ -1,11 +1,27 @@
 import os, uuid, glob, hashlib
+from urllib.parse import quote_plus
+from dotenv import load_dotenv, find_dotenv
 import psycopg2, psycopg2.extras
 from pgvector.psycopg2 import register_vector
 from datetime import datetime, UTC
 from pypdf import PdfReader
 from embed_client import embed_texts
 
-DB_DSN = "postgres://admin-csc-user:admin123!@192.168.1.33:5432/postgres"
+# Cargar variables de entorno desde .env
+load_dotenv(find_dotenv())
+
+def _build_db_dsn() -> str:
+    dsn = os.getenv("DB_DSN", "").strip()
+    if dsn:
+        return dsn
+    host = os.getenv("PG_HOST", "localhost").strip()
+    port = os.getenv("PG_PORT", "5432").strip()
+    user = os.getenv("PG_USER", "postgres").strip()
+    pwd = os.getenv("PG_PASSWORD", "").strip()
+    db  = os.getenv("PG_DATABASE", "postgres").strip()
+    return f"postgresql://{quote_plus(user)}:{quote_plus(pwd)}@{host}:{port}/{db}"
+
+DB_DSN = _build_db_dsn()
 
 def read_pdf_text(path: str) -> str:
     rd = PdfReader(path)

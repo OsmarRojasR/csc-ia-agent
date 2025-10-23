@@ -1,7 +1,31 @@
+import os
+from urllib.parse import quote_plus
+from dotenv import load_dotenv, find_dotenv
 from google.adk.agents import Agent
 from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
 from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from mcp import StdioServerParameters
+
+# Asegura variables de entorno desde .env antes de construir el agente
+load_dotenv(find_dotenv())
+
+def _build_db_dsn() -> str:
+    # Si viene ya armado, úsalo
+    dsn = os.getenv("DB_DSN", "").strip()
+    if dsn:
+        return dsn
+    host = os.getenv("PG_HOST", "localhost").strip()
+    port = os.getenv("PG_PORT", "5432").strip()
+    user = os.getenv("PG_USER", "postgres").strip()
+    pwd = os.getenv("PG_PASSWORD", "").strip()
+    db  = os.getenv("PG_DATABASE", "postgres").strip()
+    # Escapar credenciales por si contienen caracteres especiales o espacios
+    user_q = quote_plus(user)
+    pwd_q = quote_plus(pwd)
+    return f"postgresql://{user_q}:{pwd_q}@{host}:{port}/{db}"
+
+DB_DSN = _build_db_dsn()
+RAG_TOPK = os.getenv("RAG_TOPK", "5").strip() or "5"
 
 root_agent = Agent(
     name="AgenteSeguros",
@@ -18,8 +42,8 @@ root_agent = Agent(
                     command="python",
                     args=["-m", "mcp_server.server"],
                     env={
-                        "DB_DSN": "postgres://admin-csc-user:admin123!@192.168.1.33:5432/postgres",
-                        "RAG_TOPK": "5"
+                        "DB_DSN": DB_DSN,
+                        "RAG_TOPK": RAG_TOPK,
                     }
                 )
             )

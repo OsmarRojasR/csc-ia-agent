@@ -1,10 +1,11 @@
-import os, json, base64, asyncio, struct, io, wave
-from typing import Optional, Any, Dict, cast
+import os, json, base64, asyncio, struct, io, wave, html
+from typing import Optional, Any, Dict, cast, List
 from fastapi import FastAPI, WebSocket
 from adk_agent.agent import root_agent
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv, find_dotenv
+from twilio.rest import Client as TwilioClient
 import logging
 
 load_dotenv(find_dotenv())
@@ -27,6 +28,14 @@ LIVE_MODEL_CANDIDATES = [m.strip() for m in _live_models_env.split(",") if m.str
 ]
 TTS_MODEL = os.environ.get("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
 TTS_VOICE = os.environ.get("TTS_VOICE", "Kore")
+TWILIO_TTS_MODE = os.environ.get("TWILIO_TTS_MODE", "gemini").strip().lower()  # "twilio" o "gemini"
+TWILIO_VOICE = os.environ.get("TWILIO_VOICE", "Polly.Miguel")
+TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
+TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
+TWILIO_STREAM_WSS_URL = os.environ.get("TWILIO_STREAM_WSS_URL", "").strip()
+
+# Memoria de conversación por llamada (callSid)
+CALL_MEMORY: Dict[str, List[Dict[str, str]]] = {}
 
 # ------------------------ TTS: PCM24k → μ-law 8k -------------------------
 def _linear2ulaw(sample: int) -> int:
@@ -199,6 +208,7 @@ def upsample_8k_to_16k(pcm16_8k: bytes) -> bytes:
 async def voice_stream(ws: WebSocket):
     await ws.accept()
     stream_sid = None
+    call_sid: Optional[str] = None
     # Conecta a la API Live probando modelos en cascada
     live_cm = None
     live = None
@@ -207,6 +217,38 @@ async def voice_stream(ws: WebSocket):
     pump_task: Optional[asyncio.Task[Any]] = None
     responder_task: Optional[asyncio.Task[Any]] = None
     last_media_ts: float | None = None
+    # Helper: construir prompt con historial
+    def _build_agent_input(user_text: str, sid: Optional[str]) -> str:
+        turns = CALL_MEMORY.get(sid or "", [])
+        history = "\n".join(f"{t['role']}: {t['text']}" for t in turns[-8:])
+        if history:
+            return f"Historial de la llamada hasta ahora:\n{history}\n\nUsuario: {user_text}"
+        return user_text
+
+    # Helper: actualizar TwiML de la llamada para hablar con Twilio <Say> y reconectar el Stream
+    async def _twilio_say_and_restream(text: str):
+        if not call_sid:
+            return
+        if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
+            raise RuntimeError("twilio_credentials_missing")
+        if not TWILIO_STREAM_WSS_URL:
+            raise RuntimeError("twilio_stream_url_missing")
+        safe = html.escape(text)
+        twiml = f"""
+<Response>
+  <Say voice="{html.escape(TWILIO_VOICE)}">{safe}</Say>
+  <Connect>
+    <Stream url="{html.escape(TWILIO_STREAM_WSS_URL)}"/>
+  </Connect>
+</Response>
+""".strip()
+
+        def _update():
+            client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+            client.calls(call_sid).update(twiml=twiml)
+
+        await asyncio.to_thread(_update)
+
     try:
         last_err = None
         for candidate in LIVE_MODEL_CANDIDATES:
@@ -264,10 +306,14 @@ async def voice_stream(ws: WebSocket):
 
         # Task: responder cuando detectemos texto final del usuario
         async def _responder():
-            nonlocal stream_sid
+            nonlocal stream_sid, call_sid
+            logged = 0
             while True:
                 e: Dict[str, Any] = await events_q.get()
                 try:
+                    if logged < 10:
+                        logger.info("Live event type=%s keys=%s", getattr(e, 'type', e.get('type', None)), list(e.keys()) if isinstance(e, dict) else type(e))
+                        logged += 1
                     if not isinstance(e, dict):
                         continue
                     et = e.get("type") or e.get("event")
@@ -283,9 +329,30 @@ async def voice_stream(ws: WebSocket):
                             user_text = (tr.get("text") or tr.get("transcript") or "").strip()
 
                     if user_text:
-                        agent_res = await root_agent.run_async(user_text)
+                        # Guardar turno del usuario
+                        if call_sid:
+                            CALL_MEMORY.setdefault(call_sid, []).append({"role": "user", "text": user_text})
+                        agent_input = _build_agent_input(user_text, call_sid)
+                        agent_res = await root_agent.run_async(agent_input)
                         reply = getattr(agent_res, "output_text", "") or "Gracias. ¿Podrías repetir o darme más detalles?"
                         logger.info("Agent reply len=%d", len(reply))
+
+                        # Guardar turno del asistente
+                        if call_sid:
+                            CALL_MEMORY.setdefault(call_sid, []).append({"role": "assistant", "text": reply})
+
+                        # Si se configura TTS nativo de Twilio, hacemos redirect con <Say> y reconectamos <Stream>
+                        if TWILIO_TTS_MODE == "twilio":
+                            try:
+                                await _twilio_say_and_restream(reply)
+                                # Twilio cerrará este stream y abrirá uno nuevo; finalizamos este handler.
+                                try:
+                                    await ws.close()
+                                except Exception:
+                                    pass
+                                return
+                            except Exception as tex:
+                                logger.warning("Fallo TTS Twilio (%s), fallback a Gemini TTS.", tex)
 
                         # TTS μ-law 8k en frames de 20ms
                         ulaw8k = await tts_mulaw_8k(reply)
@@ -313,15 +380,27 @@ async def voice_stream(ws: WebSocket):
 
             if ev == "start":
                 stream_sid = data["start"]["streamSid"]
-                logger.info("Stream started: %s (live model=%s)", stream_sid, chosen_model)
-                # Saludo inicial para verificar retorno de audio a Twilio
+                call_sid = data["start"].get("callSid") or data["start"].get("call_sid")
+                logger.info("Stream started: %s callSid=%s (live model=%s)", stream_sid, call_sid, chosen_model)
+                # Saludo inicial
                 try:
                     greeting = "Hola, soy tu asesor virtual de seguros. ¿En qué puedo ayudarte hoy?"
-                    ulaw_greet = await tts_mulaw_8k(greeting)
-                    await ws.send_text(json.dumps({
-                        "event":"media","streamSid":stream_sid,
-                        "media":{"payload": base64.b64encode(ulaw_greet).decode()}
-                    }))
+                    if TWILIO_TTS_MODE == "twilio":
+                        try:
+                            await live.send(input=types.LiveClientRealtimeInput(activity_start=types.ActivityStart()))
+                        except Exception:
+                            pass
+                        await _twilio_say_and_restream(greeting)
+                    else:
+                        ulaw_greet = await tts_mulaw_8k(greeting)
+                        await ws.send_text(json.dumps({
+                            "event":"media","streamSid":stream_sid,
+                            "media":{"payload": base64.b64encode(ulaw_greet).decode()}
+                        }))
+                        try:
+                            await live.send(input=types.LiveClientRealtimeInput(activity_start=types.ActivityStart()))
+                        except Exception as e:
+                            logger.debug("No se pudo enviar activity_start: %s", e)
                 except Exception as e:
                     logger.warning("No se pudo enviar saludo inicial: %s", e)
                 continue
@@ -339,7 +418,7 @@ async def voice_stream(ws: WebSocket):
                 now = asyncio.get_event_loop().time()
                 if last_media_ts is not None and (now - last_media_ts) > 0.8:
                     try:
-                        await live.send(input=types.LiveClientRealtimeInput(audio_stream_end=True), end_of_turn=True)
+                        await live.send(input=types.LiveClientRealtimeInput(audio_stream_end=True, activity_end=types.ActivityEnd()), end_of_turn=True)
                     except Exception as e:
                         logger.debug("Error enviando audio_stream_end: %s", e)
                 last_media_ts = now
