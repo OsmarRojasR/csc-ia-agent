@@ -1,4 +1,5 @@
 import os
+import sys
 from urllib.parse import quote_plus
 from dotenv import load_dotenv, find_dotenv
 from google.adk.agents import Agent
@@ -39,11 +40,18 @@ root_agent = Agent(
         MCPToolset(
             connection_params=StdioConnectionParams(
                 server_params=StdioServerParameters(
-                    command="python",
+                    command=sys.executable,
                     args=["-m", "mcp_server.server"],
                     env={
                         "DB_DSN": DB_DSN,
                         "RAG_TOPK": RAG_TOPK,
+                        # Forward claves necesarias al subproceso MCP
+                        "GOOGLE_API_KEY": os.getenv("GOOGLE_API_KEY", ""),
+                        "GOOGLE_GENAI_USE_VERTEXAI": os.getenv("GOOGLE_GENAI_USE_VERTEXAI", ""),
+                        # Asegura importación de paquetes locales si el cwd cambia bajo pm2
+                        "PYTHONPATH": os.getenv("PYTHONPATH", os.getcwd()),
+                        # Desbufferizar para logs inmediatos
+                        "PYTHONUNBUFFERED": "1",
                     }
                 )
             )
