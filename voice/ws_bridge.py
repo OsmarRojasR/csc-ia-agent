@@ -1,4 +1,4 @@
-import os, json, base64, asyncio, struct, io, wave, html
+import os, json, base64, asyncio, struct, io, wave, html, time
 from typing import Optional, Any, Dict, cast, List
 from fastapi import FastAPI, WebSocket
 from adk_agent.agent import root_agent
@@ -12,7 +12,9 @@ load_dotenv(find_dotenv())
 
 app = FastAPI()
 logger = logging.getLogger("voice.ws")
-logging.basicConfig(level=logging.INFO)
+# Permite subir/bajar verbosidad sin tocar código
+_lvl = os.environ.get("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, _lvl, logging.INFO))
 _api_key = os.environ.get("GOOGLE_API_KEY")
 if not _api_key:
     raise RuntimeError("GOOGLE_API_KEY no configurado en .env")
@@ -33,6 +35,7 @@ TWILIO_VOICE = os.environ.get("TWILIO_VOICE", "Polly.Miguel")
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "").strip()
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "").strip()
 TWILIO_STREAM_WSS_URL = os.environ.get("TWILIO_STREAM_WSS_URL", "").strip()
+LOG_FRAMES_EVERY = int(os.environ.get("LOG_FRAMES_EVERY", "50").strip() or 50)
 
 # Memoria de conversación por llamada (callSid)
 CALL_MEMORY: Dict[str, List[Dict[str, str]]] = {}
@@ -217,6 +220,8 @@ async def voice_stream(ws: WebSocket):
     pump_task: Optional[asyncio.Task[Any]] = None
     responder_task: Optional[asyncio.Task[Any]] = None
     last_media_ts: float | None = None
+    frame_count: int = 0
+    total_rx_bytes: int = 0
     # Helper: construir prompt con historial
     def _build_agent_input(user_text: str, sid: Optional[str]) -> str:
         turns = CALL_MEMORY.get(sid or "", [])
@@ -226,14 +231,14 @@ async def voice_stream(ws: WebSocket):
         return user_text
 
     # Helper: actualizar TwiML de la llamada para hablar con Twilio <Say> y reconectar el Stream
-    async def _twilio_say_and_restream(text: str):
+    async def _twilio_say_and_restream(say_text: str):
         if not call_sid:
             return
         if not (TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN):
             raise RuntimeError("twilio_credentials_missing")
         if not TWILIO_STREAM_WSS_URL:
             raise RuntimeError("twilio_stream_url_missing")
-        safe = html.escape(text)
+        safe = html.escape(say_text)
         twiml = f"""
 <Response>
   <Say voice="{html.escape(TWILIO_VOICE)}">{safe}</Say>
@@ -245,8 +250,9 @@ async def voice_stream(ws: WebSocket):
 
         def _update():
             client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-            client.calls(call_sid).update(twiml=twiml)
+            client.calls(str(call_sid)).update(twiml=twiml)
 
+        logger.info("Twilio <Say> + re-<Stream> → callSid=%s, voice=%s, chars=%d", call_sid, TWILIO_VOICE, len(say_text))
         await asyncio.to_thread(_update)
 
     try:
@@ -257,7 +263,7 @@ async def voice_stream(ws: WebSocket):
                 live_cm = GENAI.aio.live.connect(model=candidate)
                 live = await live_cm.__aenter__()
                 chosen_model = candidate
-                logger.info("Conectado a Live model: %s", candidate)
+                logger.info("Conectado a Live model: %s (TTS_MODE=%s, TWILIO_VOICE=%s)", candidate, TWILIO_TTS_MODE, TWILIO_VOICE)
                 break
             except Exception as e:
                 last_err = e
@@ -329,13 +335,16 @@ async def voice_stream(ws: WebSocket):
                             user_text = (tr.get("text") or tr.get("transcript") or "").strip()
 
                     if user_text:
+                        logger.info("ASR final: '%s'%s", user_text[:120], "…" if len(user_text) > 120 else "")
                         # Guardar turno del usuario
                         if call_sid:
                             CALL_MEMORY.setdefault(call_sid, []).append({"role": "user", "text": user_text})
                         agent_input = _build_agent_input(user_text, call_sid)
+                        t0 = time.perf_counter()
                         agent_res = await root_agent.run_async(agent_input)
+                        t1 = time.perf_counter()
                         reply = getattr(agent_res, "output_text", "") or "Gracias. ¿Podrías repetir o darme más detalles?"
-                        logger.info("Agent reply len=%d", len(reply))
+                        logger.info("Agente respondió en %.3fs (len=%d)", t1 - t0, len(reply))
 
                         # Guardar turno del asistente
                         if call_sid:
@@ -346,6 +355,7 @@ async def voice_stream(ws: WebSocket):
                             try:
                                 await _twilio_say_and_restream(reply)
                                 # Twilio cerrará este stream y abrirá uno nuevo; finalizamos este handler.
+                                logger.info("Cerrando WS actual tras <Say> para que Twilio reabra el Stream…")
                                 try:
                                     await ws.close()
                                 except Exception:
@@ -368,6 +378,8 @@ async def voice_stream(ws: WebSocket):
                             "event":"mark","streamSid":stream_sid,
                             "mark":{"name":"resp_done"}
                         }))
+                    else:
+                        logger.debug("Evento Live sin texto final utilizable: %s", et)
                 except Exception as ex:
                     logger.warning("Responder task error: %s", ex)
 
@@ -382,6 +394,8 @@ async def voice_stream(ws: WebSocket):
                 stream_sid = data["start"]["streamSid"]
                 call_sid = data["start"].get("callSid") or data["start"].get("call_sid")
                 logger.info("Stream started: %s callSid=%s (live model=%s)", stream_sid, call_sid, chosen_model)
+                if call_sid:
+                    logger.info("Turnos en memoria para callSid=%s: %d", call_sid, len(CALL_MEMORY.get(call_sid, [])))
                 # Saludo inicial
                 try:
                     greeting = "Hola, soy tu asesor virtual de seguros. ¿En qué puedo ayudarte hoy?"
@@ -406,12 +420,15 @@ async def voice_stream(ws: WebSocket):
                 continue
 
             if ev == "media":
-                # Twilio → μ-law 8k base64 → bytes → PCM16 8k → PCM16 16k
+                # Twilio → μ-law 8k base64 → bytes → PCM16 8k (sin cambiar frecuencia)
                 mulaw = base64.b64decode(data["media"]["payload"])
+                total_rx_bytes += len(mulaw)
+                frame_count += 1
+                if frame_count % LOG_FRAMES_EVERY == 0:
+                    logger.info("Frames recibidos: %d  bytes(mu-law): %d", frame_count, total_rx_bytes)
                 pcm16_8k = decode_mulaw_to_pcm16(mulaw)
-                pcm16_16k = upsample_8k_to_16k(pcm16_8k)
-                # Enviar audio PCM16 16k a la sesión Live usando tipos del SDK
-                blob = types.Blob(data=pcm16_16k, mime_type="audio/pcm;rate=16000")
+                # Enviar audio PCM16 8k directo a la sesión Live (sin upsample)
+                blob = types.Blob(data=pcm16_8k, mime_type="audio/pcm;rate=8000")
                 await live.send(input=types.LiveClientRealtimeInput(audio=blob))
 
                 # Heurística: si hubo una pausa larga entre frames, marca fin de segmento de audio
@@ -419,12 +436,13 @@ async def voice_stream(ws: WebSocket):
                 if last_media_ts is not None and (now - last_media_ts) > 0.8:
                     try:
                         await live.send(input=types.LiveClientRealtimeInput(audio_stream_end=True, activity_end=types.ActivityEnd()), end_of_turn=True)
+                        logger.info("Detectada pausa larga; enviado end_of_turn al Live API")
                     except Exception as e:
                         logger.debug("Error enviando audio_stream_end: %s", e)
                 last_media_ts = now
 
             if ev == "stop":
-                logger.info("Stream stopped: %s", stream_sid)
+                logger.info("Stream stopped: %s  frames=%d  bytes=%d", stream_sid, frame_count, total_rx_bytes)
                 break
     finally:
         try:
