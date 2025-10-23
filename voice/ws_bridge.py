@@ -41,6 +41,8 @@ LOG_FRAMES_EVERY = int(os.environ.get("LOG_FRAMES_EVERY", "50").strip() or 50)
 
 # Memoria de conversación por llamada (callSid)
 CALL_MEMORY: Dict[str, List[Dict[str, str]]] = {}
+# Flags por llamada (p.ej., si ya saludamos)
+CALL_FLAGS: Dict[str, Dict[str, Any]] = {}
 
 # ------------------------ TTS: PCM24k → μ-law 8k -------------------------
 def _linear2ulaw(sample: int) -> int:
@@ -214,6 +216,7 @@ async def voice_stream(ws: WebSocket):
     await ws.accept()
     stream_sid = None
     call_sid: Optional[str] = None
+    account_sid_ws: Optional[str] = None
     # Conecta a la API Live probando modelos en cascada
     live_cm = None
     live = None
@@ -428,19 +431,23 @@ async def voice_stream(ws: WebSocket):
             if ev == "start":
                 stream_sid = data["start"]["streamSid"]
                 call_sid = data["start"].get("callSid") or data["start"].get("call_sid")
-                logger.info("Stream started: %s callSid=%s (live model=%s)", stream_sid, call_sid, chosen_model)
+                account_sid_ws = data["start"].get("accountSid") or data["start"].get("account_sid")
+                logger.info("Stream started: %s callSid=%s accountSid=%s (live model=%s)", stream_sid, call_sid, account_sid_ws, chosen_model)
                 if call_sid:
                     logger.info("Turnos en memoria para callSid=%s: %d", call_sid, len(CALL_MEMORY.get(call_sid, [])))
-                # Saludo inicial
+                # Saludo inicial (solo una vez por callSid)
                 try:
                     greeting = "Hola, soy tu asesor virtual de seguros. ¿En qué puedo ayudarte hoy?"
-                    if TWILIO_TTS_MODE == "twilio":
+                    already_greeted = bool(call_sid and CALL_FLAGS.get(call_sid, {}).get("greeted"))
+                    if TWILIO_TTS_MODE == "twilio" and not already_greeted:
                         try:
                             await live.send(input=types.LiveClientRealtimeInput(activity_start=types.ActivityStart()))
                         except Exception:
                             pass
                         try:
                             await _twilio_say_and_restream(greeting)
+                            if call_sid:
+                                CALL_FLAGS.setdefault(call_sid, {})["greeted"] = True
                         except Exception as tex:
                             # Si falla autenticación o permisos, hacemos fallback inmediato a Gemini TTS para no dejar silencio
                             logger.warning("No se pudo enviar saludo con Twilio (<Say>): %s. Fallback a Gemini TTS.", tex)
@@ -449,7 +456,9 @@ async def voice_stream(ws: WebSocket):
                                 "event":"media","streamSid":stream_sid,
                                 "media":{"payload": base64.b64encode(ulaw_greet).decode()}
                             }))
-                    else:
+                            if call_sid:
+                                CALL_FLAGS.setdefault(call_sid, {})["greeted"] = True
+                    elif TWILIO_TTS_MODE != "twilio" and not already_greeted:
                         ulaw_greet = await tts_mulaw_8k(greeting)
                         await ws.send_text(json.dumps({
                             "event":"media","streamSid":stream_sid,
@@ -459,6 +468,10 @@ async def voice_stream(ws: WebSocket):
                             await live.send(input=types.LiveClientRealtimeInput(activity_start=types.ActivityStart()))
                         except Exception as e:
                             logger.debug("No se pudo enviar activity_start: %s", e)
+                        if call_sid:
+                            CALL_FLAGS.setdefault(call_sid, {})["greeted"] = True
+                    else:
+                        logger.info("Saludo omitido (ya se saludó previamente en esta llamada).")
                 except Exception as e:
                     logger.warning("No se pudo enviar saludo inicial: %s", e)
                 continue
