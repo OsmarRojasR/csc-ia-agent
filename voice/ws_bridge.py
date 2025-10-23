@@ -267,8 +267,25 @@ async def voice_stream(ws: WebSocket):
 """.strip()
 
         def _update():
-            client = _get_twilio_client()
-            client.calls(str(call_sid)).update(twiml=twiml)
+            # Intento 1: API Key si está configurada
+            last_err: Optional[Exception] = None
+            try:
+                client = _get_twilio_client()
+                client.calls(str(call_sid)).update(twiml=twiml)
+                return
+            except Exception as e:
+                last_err = e
+                # Si usamos API Key y falló con 401, reintenta con Auth Token clásico
+                try:
+                    if TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN:
+                        logger.info("Retry update con Auth Token clásico (account=****%s)", TWILIO_ACCOUNT_SID[-6:])
+                        client2 = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+                        client2.calls(str(call_sid)).update(twiml=twiml)
+                        return
+                except Exception as e2:
+                    last_err = e2
+            # Si llegamos aquí, ningún método funcionó
+            raise last_err or RuntimeError("twilio_update_failed")
 
         logger.info("Twilio <Say> + re-<Stream> → callSid=%s, voice=%s, chars=%d", call_sid, TWILIO_VOICE, len(say_text))
         await asyncio.to_thread(_update)
