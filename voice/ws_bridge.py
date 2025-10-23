@@ -205,6 +205,7 @@ async def voice_stream(ws: WebSocket):
     chosen_model = None
     events_q: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
     pump_task: Optional[asyncio.Task[Any]] = None
+    responder_task: Optional[asyncio.Task[Any]] = None
     last_media_ts: float | None = None
     try:
         last_err = None
@@ -257,9 +258,53 @@ async def voice_stream(ws: WebSocket):
             except Exception as e:
                 logger.info("Pump de eventos finalizado: %s", e)
 
-        # Crea el task si detectamos alguna forma de lectura
+        # Task: bombeo de eventos del Live
         if callable(getattr(live, "receive", None)) or hasattr(live, "__aiter__"):
             pump_task = asyncio.create_task(_pump_events())
+
+        # Task: responder cuando detectemos texto final del usuario
+        async def _responder():
+            nonlocal stream_sid
+            while True:
+                e: Dict[str, Any] = await events_q.get()
+                try:
+                    if not isinstance(e, dict):
+                        continue
+                    et = e.get("type") or e.get("event")
+                    user_text: Optional[str] = None
+                    if et in ("response.completed", "live.response.completed", "transcript.completed"):
+                        user_text = (e.get("full_text") or e.get("text") or "").strip()
+                        if not user_text:
+                            resp = cast(Dict[str, Any], e.get("response") or {})
+                            user_text = (resp.get("output_text") or resp.get("text") or "").strip()
+                    else:
+                        tr = cast(Dict[str, Any], e.get("transcript") or {})
+                        if isinstance(tr, dict) and tr.get("is_final"):
+                            user_text = (tr.get("text") or tr.get("transcript") or "").strip()
+
+                    if user_text:
+                        agent_res = await root_agent.run_async(user_text)
+                        reply = getattr(agent_res, "output_text", "") or "Gracias. ¿Podrías repetir o darme más detalles?"
+                        logger.info("Agent reply len=%d", len(reply))
+
+                        # TTS μ-law 8k en frames de 20ms
+                        ulaw8k = await tts_mulaw_8k(reply)
+                        frame = 160
+                        for pos in range(0, len(ulaw8k), frame):
+                            chunk = ulaw8k[pos:pos+frame]
+                            await ws.send_text(json.dumps({
+                                "event":"media","streamSid":stream_sid,
+                                "media":{"payload": base64.b64encode(chunk).decode()}
+                            }))
+                            await asyncio.sleep(0)
+                        await ws.send_text(json.dumps({
+                            "event":"mark","streamSid":stream_sid,
+                            "mark":{"name":"resp_done"}
+                        }))
+                except Exception as ex:
+                    logger.warning("Responder task error: %s", ex)
+
+        responder_task = asyncio.create_task(_responder())
 
         while True:
             msg = await ws.receive_text()
@@ -294,64 +339,10 @@ async def voice_stream(ws: WebSocket):
                 now = asyncio.get_event_loop().time()
                 if last_media_ts is not None and (now - last_media_ts) > 0.8:
                     try:
-                        await live.send(input=types.LiveClientRealtimeInput(audio_stream_end=True))
+                        await live.send(input=types.LiveClientRealtimeInput(audio_stream_end=True), end_of_turn=True)
                     except Exception as e:
                         logger.debug("Error enviando audio_stream_end: %s", e)
                 last_media_ts = now
-
-                # Drena eventos del pump si hay disponibles y detecta final de transcripción
-                # Esto evita bloquear el loop principal
-                for _ in range(10):
-                    if events_q.empty():
-                        break
-                    e: Dict[str, Any] = await events_q.get()
-                    # Intenta extraer texto final de distintas formas
-                    user_text = None
-                    try:
-                        if isinstance(e, dict):
-                            et = e.get("type") or e.get("event")
-                            # Caso 1: evento de respuesta completada
-                            if et in ("response.completed", "live.response.completed", "transcript.completed"):
-                                user_text = (e.get("full_text") or e.get("text") or "").strip()
-                                if not user_text:
-                                    # otros posibles anidamientos
-                                    resp = e.get("response") or {}
-                                    user_text = (resp.get("output_text") or resp.get("text") or "").strip()
-                            # Caso 2: transcript final explícito
-                            if not user_text:
-                                tr = e.get("transcript") or {}
-                                if isinstance(tr, dict) and tr.get("is_final"):
-                                    user_text = (tr.get("text") or tr.get("transcript") or "").strip()
-                    except Exception:
-                        user_text = None
-
-                    if user_text:
-                        # Ejecuta el agente
-                        agent_res = await root_agent.run_async(user_text)
-                        reply = getattr(agent_res, "output_text", "")
-                        if not reply:
-                            reply = "Gracias. ¿Podrías repetir o darme más detalles?"
-                        logger.info("Agent reply len=%d", len(reply))
-
-                        # TTS μ-law 8k y retorna a Twilio (en frames de ~20ms para mejor calidad)
-                        ulaw8k = await tts_mulaw_8k(reply)
-                        frame = 160  # 20ms a 8kHz = 160 muestras μ-law (1 byte/muestra)
-                        pos = 0
-                        total = len(ulaw8k)
-                        while pos < total:
-                            chunk = ulaw8k[pos:pos+frame]
-                            await ws.send_text(json.dumps({
-                                "event":"media","streamSid":stream_sid,
-                                "media":{"payload": base64.b64encode(chunk).decode()}
-                            }))
-                            pos += frame
-                            # Ceder control para no saturar el socket
-                            await asyncio.sleep(0)
-                        await ws.send_text(json.dumps({
-                            "event":"mark","streamSid":stream_sid,
-                            "mark":{"name":"resp_done"}
-                        }))
-                        break
 
             if ev == "stop":
                 logger.info("Stream stopped: %s", stream_sid)
@@ -364,6 +355,11 @@ async def voice_stream(ws: WebSocket):
             if pump_task:
                 try:
                     pump_task.cancel()
+                except Exception:
+                    pass
+            if responder_task:
+                try:
+                    responder_task.cancel()
                 except Exception:
                     pass
             await ws.close()
