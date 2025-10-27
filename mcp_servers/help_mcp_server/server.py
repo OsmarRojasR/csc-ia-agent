@@ -8,12 +8,13 @@ Provee herramientas para:
 Nota: Este servidor no requiere base de datos. Usa un KB mínimo estático.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass
 from fastmcp import FastMCP
 import os
 import json
-from typing import List, Dict, Any
+from pathlib import Path
+import unicodedata
 import psycopg2, psycopg2.extras
 from dotenv import load_dotenv, find_dotenv
 from tools.embed_client import embed_texts
@@ -232,28 +233,191 @@ def search_help(
     return [x for x in vec if x["score"] >= min_score][: top_k]
 
 
-#importar datos de delitos desde un archivo JSON al iniciar el servidor
-DATA_FILE = os.getenv("HELP_CRIME_DATA_FILE", "data/crime_data.json").strip()
+# ------------------------ Datos de delitos (JSON local) --------------------
+# Carga robusta: usa HELP_CRIME_DATA_FILE si se define; si no, resuelve relativo a este módulo
+_BASE_DIR = Path(__file__).resolve().parent
+_DEFAULT_CRIME_PATH = _BASE_DIR / "data" / "crime_data.json"
+DATA_FILE = os.getenv("HELP_CRIME_DATA_FILE") or str(_DEFAULT_CRIME_PATH)
 CRIME_DATA: List[Dict[str, Any]] = []
 try:
     with open(DATA_FILE, "r", encoding="utf-8") as f:
-        CRIME_DATA = json.load(f)
+        CRIME_DATA = json.load(f) or []
 except Exception:
-    pass
+    CRIME_DATA = []
 
-# La tool para leer y buscar en los datos de delitos desde la variable global CRIME_DATA
+# Utils
+MONTHS_ES = [
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+]
+
+def _norm(s: str) -> str:
+    try:
+        s = s.strip()
+    except Exception:
+        return ""
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return s.lower()
+
+def _get_first(item: Dict[str, Any], candidates: List[str]) -> Optional[Any]:
+    if not item:
+        return None
+    # mapa de claves normalizadas
+    norm_map = { _norm(k): k for k in item.keys() }
+    for c in candidates:
+        k = norm_map.get(_norm(c))
+        if k in item:
+            return item.get(k)
+    return None
+
+def _get_month_value(item: Dict[str, Any], month: str) -> float:
+    if not month:
+        return 0.0
+    # intenta variantes de capitalización
+    keys = [month, month.title(), month.capitalize(), month.upper(), month.lower()]
+    for k in keys:
+        try:
+            v = item.get(k)
+            if v is None:
+                continue
+            return float(v)
+        except Exception:
+            continue
+    # intenta buscar por normalización
+    norm_month = _norm(month)
+    for k, v in item.items():
+        if _norm(k) == norm_month:
+            try:
+                return float(v)
+            except Exception:
+                return 0.0
+    return 0.0
+
+def _sum_months(item: Dict[str, Any]) -> float:
+    total = 0.0
+    for m in MONTHS_ES:
+        try:
+            v = item.get(m)
+            if v is None:
+                continue
+            total += float(v)
+        except Exception:
+            continue
+    return total
+
 @mcp.tool()
 def search_crime_data(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
-    """Busca en los datos de delitos almacenados en memoria."""
-    q = (query or "").lower()
-    results: List[Dict[str, Any]] = []
-    for item in CRIME_DATA:
-        text = " ".join(str(v).lower() for v in item.values() if isinstance(v, str))
-        if q in text:
-            results.append(item)
-        if len(results) >= top_k:
-            break
-    return results
+    """Búsqueda simple de texto en campos string del JSON de delitos."""
+    q = _norm(query or "")
+    out: List[Dict[str, Any]] = []
+    for idx, item in enumerate(CRIME_DATA):
+        hay = False
+        for v in item.values():
+            if isinstance(v, str) and q in _norm(v):
+                hay = True
+                break
+        if hay:
+            out.append({
+                "resource": f"crime://item/{idx}",
+                "preview": {k: v for k, v in item.items() if isinstance(v, str)}
+            })
+            if len(out) >= top_k:
+                break
+    return out
+
+@mcp.tool()
+def crime_stats(
+    query: str = "",
+    estado: str = "",
+    municipio: str = "",
+    delito: str = "",
+    year: int = 0,
+    month: str = "",
+    top_k: int = 10,
+    min_count: float = 0.0,
+) -> List[Dict[str, Any]]:
+    """Filtra el JSON por estado/municipio/delito/año y devuelve conteos por mes o total.
+
+    - Si 'month' está vacío, suma los 12 meses como 'total'.
+    - Si 'month' viene, devuelve el conteo de ese mes en 'count'.
+    - 'query' aplica sobre todos los campos de texto.
+    """
+    q = _norm(query)
+    month_sel = month.strip()
+
+    # Candidatos de nombres de campo (flexibles a acentos y mayúsculas)
+    C_ESTADO = ["Entidad", "Estado"]
+    C_MUNICIPIO = ["Municipio"]
+    C_DELITO = ["Delito", "Tipo", "Categoria", "Clasificacion"]
+    C_YEAR = ["Año", "Anio", "Year"]
+
+    rows: List[Dict[str, Any]] = []
+    for idx, item in enumerate(CRIME_DATA):
+        # Filtro por query de texto
+        if q:
+            found = False
+            for v in item.values():
+                if isinstance(v, str) and q in _norm(v):
+                    found = True
+                    break
+            if not found:
+                continue
+
+        v_estado = _get_first(item, C_ESTADO)
+        v_muni = _get_first(item, C_MUNICIPIO)
+        v_delito = _get_first(item, C_DELITO)
+        v_year = _get_first(item, C_YEAR)
+
+        if estado and (not v_estado or _norm(estado) not in _norm(str(v_estado))):
+            continue
+        if municipio and (not v_muni or _norm(municipio) not in _norm(str(v_muni))):
+            continue
+        if delito and (not v_delito or _norm(delito) not in _norm(str(v_delito))):
+            continue
+        if year and str(year) != str(v_year):
+            continue
+
+        if month_sel:
+            count = _get_month_value(item, month_sel)
+            if count < min_count:
+                continue
+            rows.append({
+                "resource": f"crime://item/{idx}",
+                "estado": v_estado,
+                "municipio": v_muni,
+                "delito": v_delito,
+                "year": v_year,
+                "month": month_sel,
+                "count": count,
+            })
+        else:
+            total = _sum_months(item)
+            if total < min_count:
+                continue
+            rows.append({
+                "resource": f"crime://item/{idx}",
+                "estado": v_estado,
+                "municipio": v_muni,
+                "delito": v_delito,
+                "year": v_year,
+                "total": total,
+            })
+
+    # ordenar
+    key = (lambda r: r.get("count", r.get("total", 0.0)))
+    rows.sort(key=key, reverse=True)
+    return rows[: max(1, top_k)]
+
+@mcp.resource("crime://item/{index}")
+def read_crime_item(index: str) -> Dict[str, Any]:
+    try:
+        i = int(index)
+    except Exception:
+        return {}
+    if i < 0 or i >= len(CRIME_DATA):
+        return {}
+    return CRIME_DATA[i]
 
 if __name__ == "__main__":
     mcp.run()
