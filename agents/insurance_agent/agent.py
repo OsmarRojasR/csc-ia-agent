@@ -40,7 +40,7 @@ for extra in (_REPO_ROOT, _AGENTS_DIR):
 _CHILD_PYTHONPATH = ":".join(_py_path_parts) if _py_path_parts else _REPO_ROOT
 
 root_agent = Agent(
-    name="Agente-Vendedor-Seguros",
+    name="Agente_Vendedor_Seguros",
     model="gemini-2.5-flash",
     description="Asesor de seguros conectado a PostgreSQL y pgvector.",
     instruction=(
