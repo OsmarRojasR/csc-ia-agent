@@ -46,7 +46,7 @@ module.exports = {
 
     // ADK API server único (local only), sirve múltiples agentes desde ./agents
     {
-      name: "adk-web",
+      name: "adk-api-server",
       cwd: ".",
       script: "bash",
       interpreter: "none",
