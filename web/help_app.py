@@ -1,9 +1,11 @@
 # help_app.py
 import os
+import re
 import json
 import uuid
 import requests
 import streamlit as st
+from urllib.parse import urlparse, urlunparse
 
 # ---------------- UI ----------------
 st.set_page_config(page_title="Agentic - Ayuda y Apoyo")
@@ -13,11 +15,30 @@ st.subheader("Agentic - Ayuda y Apoyo")
 with st.sidebar:
     st.subheader("Servidor ADK (local)")
 
-    # Por defecto habla con el agente help local en :3100
-    base_url = st.text_input(
-        "Base URL",
-        os.getenv("ADK_BASE_URL", "http://127.0.0.1:3100"),
-    )
+    # Normalizador de URL para forzar puerto por defecto (3100)
+    def _normalize_url(u: str | None, default_port: int) -> str:
+        if not u:
+            return f"http://127.0.0.1:{default_port}"
+        u = u.strip().rstrip("/")
+        if not re.match(r"^https?://", u):
+            u = f"http://{u}"
+        p = urlparse(u)
+        host, sep, port = p.netloc.partition(":")
+        if not port and host in {"localhost", "127.0.0.1", "::1"}:
+            netloc = f"{host}:{default_port}"
+            u = urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
+        return u
+
+    # Preferencia: ENV -> secrets -> default local 3100
+    default_env = os.getenv("ADK_BASE_URL")
+    try:
+        default_secret = st.secrets.get("ADK_BASE_URL", None)
+    except Exception:
+        default_secret = None
+    _pref = default_env or default_secret or "http://127.0.0.1:3100"
+
+    base_url_input = st.text_input("Base URL", _pref)
+    base_url = _normalize_url(base_url_input, default_port=3100)
     bearer = st.text_input(
         "Bearer token (opcional)", os.getenv("ADK_BEARER_TOKEN", ""), type="password"
     )
