@@ -55,7 +55,7 @@ module.exports = {
         "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk api_server --host 127.0.0.1 --port 3000 agents"
       ],
       env_file: ".env",
-      env: { PYTHONUNBUFFERED: "1", PORT: "3000" },
+      env: { PYTHONUNBUFFERED: "1", PORT: "3000", PYTHONPATH: ".:./agents" },
       autorestart: true,
       max_restarts: 10,
       restart_delay: 2000,
