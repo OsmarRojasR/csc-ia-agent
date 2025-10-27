@@ -1,5 +1,45 @@
 import os
 import sys
+from dotenv import load_dotenv, find_dotenv
+from google.adk.agents import Agent
+from google.adk.tools.mcp_tool.mcp_toolset import MCPToolset
+from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
+from mcp import StdioServerParameters
+
+# Asegura variables de entorno (GOOGLE_API_KEY, etc.)
+load_dotenv(find_dotenv())
+
+root_agent = Agent(
+    name="HelpMujeres",
+    model="gemini-2.0-flash",
+    description="Agente de apoyo y asesoría para mujeres víctimas de violencia.",
+    instruction=(
+        "Eres un agente de apoyo, empático y no juzgador. Tu prioridad es la seguridad de la usuaria. "
+        "Antes de dar recomendaciones, valida si hay riesgo inmediato y sugiere llamar al 911 u otra línea de emergencia. "
+        "Explica opciones de protección y denuncia con claridad, paso a paso, y ofrece recursos y contactos confiables. "
+        "Puedes usar tus herramientas MCP para buscar protocolos, contactos de emergencia y sugerir un plan de seguridad. "
+        "No des consejos legales definitivos; invita a buscar asesoría profesional."
+    ),
+    tools=[
+        MCPToolset(
+            connection_params=StdioConnectionParams(
+                server_params=StdioServerParameters(
+                    command=sys.executable,
+                    args=["-m", "mcp_servers.help_mcp_server.server"],
+                    env={
+                        # Forward claves necesarias al subproceso MCP
+                        "GOOGLE_API_KEY": os.getenv("GOOGLE_API_KEY", ""),
+                        # Desbufferizado para logs inmediatos
+                        "PYTHONUNBUFFERED": "1",
+                    },
+                )
+            )
+        )
+    ],
+)
+
+import os
+import sys
 from urllib.parse import quote_plus
 from dotenv import load_dotenv, find_dotenv
 from google.adk.agents import Agent
@@ -30,7 +70,7 @@ RAG_TOPK = os.getenv("RAG_TOPK", "5").strip() or "5"
 
 root_agent = Agent(
     name="AgenteSeguros",
-    model="gemini-2.0-flash",
+    model="gemini-2.5-flash",
     description="Asesor de seguros conectado a PostgreSQL y pgvector.",
     instruction=(
         "Eres un asesor de ventas de seguros; tu finalidad es vender. Puedes buscar clientes, pólizas y coberturas via MCP"

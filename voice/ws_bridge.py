@@ -1,7 +1,7 @@
 import os, json, base64, asyncio, struct, io, wave, html, time
 from typing import Optional, Any, Dict, cast, List
 from fastapi import FastAPI, WebSocket
-from adk_agent.agent import root_agent
+from insurance_agent.agent import root_agent
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv, find_dotenv

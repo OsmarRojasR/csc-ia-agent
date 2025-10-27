@@ -1,6 +1,6 @@
 import os, json, base64, audioop, asyncio
 from fastapi import FastAPI, WebSocket
-from adk_agent.agent import root_agent
+from insurance_agent.agent import root_agent
 from google import genai
 
 app = FastAPI()
