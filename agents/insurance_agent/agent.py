@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 from urllib.parse import quote_plus
 from dotenv import load_dotenv, find_dotenv
 from google.adk.agents import Agent
@@ -28,6 +29,16 @@ def _build_db_dsn() -> str:
 DB_DSN = _build_db_dsn()
 RAG_TOPK = os.getenv("RAG_TOPK", "5").strip() or "5"
 
+# Asegura PYTHONPATH absoluto (repo root y ./agents) para subproceso MCP
+_REPO_ROOT = str(Path(__file__).resolve().parents[2])
+_AGENTS_DIR = str(Path(__file__).resolve().parents[1])  # .../agents
+_parent_py_path = os.getenv("PYTHONPATH", "").strip()
+_py_path_parts = [p for p in _parent_py_path.split(":") if p]
+for extra in (_REPO_ROOT, _AGENTS_DIR):
+    if extra not in _py_path_parts:
+        _py_path_parts.append(extra)
+_CHILD_PYTHONPATH = ":".join(_py_path_parts) if _py_path_parts else _REPO_ROOT
+
 root_agent = Agent(
     name="AgenteSeguros",
     model="gemini-2.5-flash",
@@ -48,8 +59,8 @@ root_agent = Agent(
                         # Forward claves necesarias al subproceso MCP
                         "GOOGLE_API_KEY": os.getenv("GOOGLE_API_KEY", ""),
                         "GOOGLE_GENAI_USE_VERTEXAI": os.getenv("GOOGLE_GENAI_USE_VERTEXAI", ""),
-                        # Asegura importación de paquetes locales si el cwd cambia bajo pm2
-                        "PYTHONPATH": os.getenv("PYTHONPATH", os.getcwd()),
+                        # Asegura importación de paquetes locales con rutas absolutas
+                        "PYTHONPATH": _CHILD_PYTHONPATH,
                         # Desbufferizar para logs inmediatos
                         "PYTHONUNBUFFERED": "1",
                     }
