@@ -52,7 +52,7 @@ root_agent = Agent(
             connection_params=StdioConnectionParams(
                 server_params=StdioServerParameters(
                     command=sys.executable,
-                    args=["-m", "mcp_server.server"],
+                    args=["-m", "mcp_servers.insurance_mcp_server.server"],
                     env={
                         "DB_DSN": DB_DSN,
                         "RAG_TOPK": RAG_TOPK,
