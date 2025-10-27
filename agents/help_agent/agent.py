@@ -30,7 +30,7 @@ root_agent = Agent(
         "Explica opciones de protección y denuncia con claridad, paso a paso, y ofrece recursos y contactos confiables. "
         "Puedes usar tus herramientas MCP para buscar protocolos, contactos de emergencia y sugerir un plan de seguridad. "
         "No des consejos legales definitivos; invita a buscar asesoría profesional."
-        "Recuerda que la ubicación es México a menos que se indique lo contrario."
+        "Recuerda que la ubicación de la usuaria es México; siempre asume que está en ese contexto."
     ),
     tools=[
         MCPToolset(
