@@ -19,8 +19,8 @@ module.exports = {
         "-lc",
         "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec uvicorn voice.app:app --host 0.0.0.0 --port 9000"
       ],
-      env_file: ".env",
-      env: { PYTHONUNBUFFERED: "1" },
+  env_file: ".env",
+  env: { PYTHONUNBUFFERED: "1", PYTHONPATH: ".:./agents" },
       autorestart: true,
       max_restarts: 10,
       restart_delay: 2000,
@@ -37,8 +37,8 @@ module.exports = {
         "-lc",
         "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec uvicorn voice.ws_bridge:app --host 0.0.0.0 --port 9001"
       ],
-      env_file: ".env",
-      env: { PYTHONUNBUFFERED: "1" },
+  env_file: ".env",
+  env: { PYTHONUNBUFFERED: "1", PYTHONPATH: ".:./agents" },
       autorestart: true,
       max_restarts: 10,
       restart_delay: 2000,
@@ -53,7 +53,7 @@ module.exports = {
       interpreter: "none",
       args: [
         "-lc",
-        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk web agents.insurance_agent.agent"
+        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk web agents/insurance_agent"
       ],
       env_file: ".env",
       env: { PYTHONUNBUFFERED: "1", PORT: "3000" },
@@ -71,7 +71,7 @@ module.exports = {
       interpreter: "none",
       args: [
         "-lc",
-        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk web agents.help_agent.agent"
+        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk web agents/help_agent"
       ],
       env_file: ".env",
       env: { PYTHONUNBUFFERED: "1", PORT: "3100" },
