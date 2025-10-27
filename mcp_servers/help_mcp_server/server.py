@@ -12,6 +12,8 @@ from typing import List, Dict, Any
 from dataclasses import dataclass
 from fastmcp import FastMCP
 import os
+import json
+from typing import List, Dict, Any
 import psycopg2, psycopg2.extras
 from dotenv import load_dotenv, find_dotenv
 from tools.embed_client import embed_texts
@@ -229,6 +231,29 @@ def search_help(
 
     return [x for x in vec if x["score"] >= min_score][: top_k]
 
+
+#importar datos de delitos desde un archivo JSON al iniciar el servidor
+DATA_FILE = os.getenv("HELP_CRIME_DATA_FILE", "data/crime_data.json").strip()
+CRIME_DATA: List[Dict[str, Any]] = []
+try:
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
+        CRIME_DATA = json.load(f)
+except Exception:
+    pass
+
+# La tool para leer y buscar en los datos de delitos desde la variable global CRIME_DATA
+@mcp.tool()
+def search_crime_data(query: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    """Busca en los datos de delitos almacenados en memoria."""
+    q = (query or "").lower()
+    results: List[Dict[str, Any]] = []
+    for item in CRIME_DATA:
+        text = " ".join(str(v).lower() for v in item.values() if isinstance(v, str))
+        if q in text:
+            results.append(item)
+        if len(results) >= top_k:
+            break
+    return results
 
 if __name__ == "__main__":
     mcp.run()
