@@ -126,6 +126,18 @@ with st.sidebar:
         except Exception as e:
             st.error(str(e))
 
+# ---- Auto-crear sesión al cargar la página (una vez por sesión) ----
+if not st.session_state.get("session_ready"):
+    try:
+        ensure_session(base_url, app_name, user_id, session_id, state=None)
+        st.session_state["session_ready"] = True
+        # Marca discreta en el sidebar
+        with st.sidebar:
+            st.caption("Sesión creada automáticamente")
+    except Exception as e:
+        with st.sidebar:
+            st.caption(f"No se pudo crear sesión: {e}")
+
 # --------- Historial y helpers ---------
 if "history" not in st.session_state:
     st.session_state.history = []
