@@ -21,7 +21,7 @@ for extra in (_REPO_ROOT, _AGENTS_DIR):
 _CHILD_PYTHONPATH = ":".join(_py_path_parts) if _py_path_parts else _REPO_ROOT
 
 root_agent = Agent(
-    name="HelpMujeres",
+    name="Bot de Ayuda a Mujeres",
     model="gemini-2.0-flash",
     description="Agente de apoyo y asesoría para mujeres víctimas de violencia.",
     instruction=(
