@@ -20,20 +20,23 @@ def build_db_dsn() -> str:
     return f"postgresql://{user}:{pwd}@{host}:{port}/{db}"
 
 DB_DSN = build_db_dsn()
-HELP_DB_SCHEMA = os.getenv("HELP_DB_SCHEMA", "help").strip() or "help"
+HELP_DB_SCHEMA = os.getenv("HELP_DB_SCHEMA", "public").strip() or "public"
 
 def db():
         """Devuelve conexión con search_path al esquema de ayuda."""
         conn = psycopg2.connect(DB_DSN)
         register_vector(conn)
         with conn.cursor() as cur:
-                cur.execute("SET search_path TO %s, public", (HELP_DB_SCHEMA,))
+            # Asegura que consultamos primero en el esquema deseado y siempre en public
+            cur.execute("SET search_path TO %s, public", (HELP_DB_SCHEMA,))
         return conn
 
 def ensure_schema_and_tables():
         """Crea schema y tablas si no existen (requiere permisos)."""
         schema = HELP_DB_SCHEMA
         with psycopg2.connect(DB_DSN) as conn, conn.cursor() as cur:
+            # Si el esquema es 'public', no intentes crearlo (evita permisos)
+            if schema.lower() != "public":
                 cur.execute("CREATE SCHEMA IF NOT EXISTS %s" % schema)
                 # Extension vector (si permisos); si falla, continúa y asume creada
                 try:
