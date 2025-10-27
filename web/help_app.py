@@ -15,7 +15,7 @@ st.subheader("Agentic - Ayuda y Apoyo")
 with st.sidebar:
     st.subheader("Servidor ADK (local)")
 
-    # Normalizador de URL para forzar puerto por defecto (3100)
+    # Normalizador de URL para forzar puerto por defecto (3000)
     def _normalize_url(u: str | None, default_port: int) -> str:
         if not u:
             return f"http://127.0.0.1:{default_port}"
@@ -29,16 +29,16 @@ with st.sidebar:
             u = urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
         return u
 
-    # Preferencia: ENV -> secrets -> default local 3100
+    # Preferencia: ENV -> secrets -> default local 3000
     default_env = os.getenv("ADK_BASE_URL")
     try:
         default_secret = st.secrets.get("ADK_BASE_URL", None)
     except Exception:
         default_secret = None
-    _pref = default_env or default_secret or "http://127.0.0.1:3100"
+    _pref = default_env or default_secret or "http://127.0.0.1:3000"
 
     base_url_input = st.text_input("Base URL", _pref)
-    base_url = _normalize_url(base_url_input, default_port=3100)
+    base_url = _normalize_url(base_url_input, default_port=3000)
     bearer = st.text_input(
         "Bearer token (opcional)", os.getenv("ADK_BEARER_TOKEN", ""), type="password"
     )
@@ -64,11 +64,15 @@ with st.sidebar:
     except Exception as e:
         st.warning(f"No se pudo listar apps: {e}")
 
-    # Seleccionar por defecto help_agent
-    default_app = "help_agent"
+    # Selección de app por defecto: APP_NAME env/secrets -> "help_agent"
+    try:
+        secret_app = st.secrets.get("APP_NAME", None)
+    except Exception:
+        secret_app = None
+    default_app = os.getenv("APP_NAME") or secret_app or "help_agent"
     options = apps or [default_app]
     if default_app not in options:
-        options = [default_app] + options
+        options = [default_app] + [a for a in options if a != default_app]
     try:
         default_index = options.index(default_app)
     except Exception:

@@ -62,7 +62,20 @@ with st.sidebar:
     except Exception as e:
         st.warning(f"No se pudo listar apps: {e}")
 
-    app_name = st.selectbox("App", apps or ["adk_agent"])
+    # Selección de app por defecto: APP_NAME env/secrets -> "insurance_agent"
+    try:
+        secret_app = st.secrets.get("APP_NAME", None)
+    except Exception:
+        secret_app = None
+    app_pref = os.getenv("APP_NAME") or secret_app or "insurance_agent"
+    options = apps or [app_pref]
+    if app_pref not in options:
+        options = [app_pref] + [a for a in options if a != app_pref]
+    try:
+        default_index = options.index(app_pref)
+    except Exception:
+        default_index = 0
+    app_name = st.selectbox("App", options, index=default_index)
 
     st.subheader("Sesión")
     user_id = st.text_input("User ID", os.getenv("ADK_USER_ID", "u_123"))

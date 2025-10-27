@@ -2,8 +2,7 @@
 // Ports:
 // - voice-app (FastAPI webhook)        : 9000
 // - voice-ws (Twilio WS bridge)        : 9001
-// - adk-web (insurance agent, local)   : 3000
-// - help-web (help agent, local)       : 3100
+// - adk-web (single ADK api_server)    : 3000 (sirve múltiples apps)
 // - streamlit-insurance (UI)           : 8501, baseUrlPath=/insurance
 // - streamlit-help (UI)                : 8511, baseUrlPath=/help
 
@@ -45,7 +44,7 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss Z"
     },
 
-    // ADK Insurance agent API server (local only)
+    // ADK API server único (local only), sirve múltiples agentes desde ./agents
     {
       name: "adk-web",
       cwd: ".",
@@ -53,28 +52,10 @@ module.exports = {
       interpreter: "none",
       args: [
         "-lc",
-        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk api_server --host 127.0.0.1 --port 3000 agents/insurance_agent"
+        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk api_server --host 127.0.0.1 --port 3000 agents"
       ],
       env_file: ".env",
       env: { PYTHONUNBUFFERED: "1", PORT: "3000" },
-      autorestart: true,
-      max_restarts: 10,
-      restart_delay: 2000,
-      log_date_format: "YYYY-MM-DD HH:mm:ss Z"
-    },
-
-    // ADK Help agent API server (local only)
-    {
-      name: "help-web",
-      cwd: ".",
-      script: "bash",
-      interpreter: "none",
-      args: [
-        "-lc",
-        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk api_server --host 127.0.0.1 --port 3100 agents/help_agent"
-      ],
-      env_file: ".env",
-      env: { PYTHONUNBUFFERED: "1", PORT: "3100" },
       autorestart: true,
       max_restarts: 10,
       restart_delay: 2000,
@@ -116,7 +97,7 @@ module.exports = {
       env_file: ".env",
       env: {
         PYTHONUNBUFFERED: "1",
-        ADK_BASE_URL: "http://127.0.0.1:3100",
+        ADK_BASE_URL: "http://127.0.0.1:3000",
         APP_NAME: "help_agent"
       },
       autorestart: true,
