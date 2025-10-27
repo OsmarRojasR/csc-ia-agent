@@ -45,7 +45,7 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss Z"
     },
 
-    // ADK Insurance agent (local only)
+    // ADK Insurance agent API server (local only)
     {
       name: "adk-web",
       cwd: ".",
@@ -53,7 +53,7 @@ module.exports = {
       interpreter: "none",
       args: [
         "-lc",
-        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk web agents/insurance_agent"
+        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk api_server --host 127.0.0.1 --port 3000 agents/insurance_agent"
       ],
       env_file: ".env",
       env: { PYTHONUNBUFFERED: "1", PORT: "3000" },
@@ -63,7 +63,7 @@ module.exports = {
       log_date_format: "YYYY-MM-DD HH:mm:ss Z"
     },
 
-    // ADK Help agent (local only)
+    // ADK Help agent API server (local only)
     {
       name: "help-web",
       cwd: ".",
@@ -71,7 +71,7 @@ module.exports = {
       interpreter: "none",
       args: [
         "-lc",
-        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk web agents/help_agent"
+        "source .venv/bin/activate 2>/dev/null || source venv/bin/activate 2>/dev/null || true; exec adk api_server --host 127.0.0.1 --port 3100 agents/help_agent"
       ],
       env_file: ".env",
       env: { PYTHONUNBUFFERED: "1", PORT: "3100" },
