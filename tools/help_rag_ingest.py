@@ -94,7 +94,15 @@ def ensure_schema_and_tables(conn):
 def read_pdf_text(path: str) -> str:
     rd = PdfReader(path)
     text = "\n".join(p.extract_text() or "" for p in rd.pages)
-    logger.info("Leído PDF '%s' con %d páginas y %d caracteres", path, len(rd.pages), len(text))
+    # Sanitizar texto: eliminar codepoints 'surrogate' que pueden aparecer por errores
+    # en la extracción y que fallan al codificar a UTF-8 en operaciones posteriores.
+    def _remove_surrogates(s: str) -> str:
+        if not s:
+            return ""
+        return ''.join(ch for ch in s if not (0xD800 <= ord(ch) <= 0xDFFF))
+
+    text = _remove_surrogates(text)
+    logger.info("Leído PDF '%s' con %d páginas y %d caracteres (sanitizado)", path, len(rd.pages), len(text))
     return text
 
 
@@ -109,7 +117,11 @@ def chunk_text(text: str, words=220, overlap=40):
 
 def sha1(s: str) -> str:
     import hashlib
-    return hashlib.sha1(s.encode("utf-8")).hexdigest()
+    # Asegurar que no haya surrogates que rompan la codificación a bytes
+    if s is None:
+        s = ""
+    s_clean = ''.join(ch for ch in s if not (0xD800 <= ord(ch) <= 0xDFFF))
+    return hashlib.sha1(s_clean.encode("utf-8", errors="ignore")).hexdigest()
 
 
 def upsert_doc(cur, title: str, country: str, source_uri: str, content: str):
