@@ -86,7 +86,7 @@ st.markdown(
 )
 
 # CSS: estructura en 3 filas y footer fijo al fondo
-logo_path = Path(__file__).parent / "assets" / "logo.svg"
+logo_path = Path(__file__).parent / "assets" / "logo.png"
 if logo_path.exists():
     try:
         st.logo(str(logo_path), size="large")
