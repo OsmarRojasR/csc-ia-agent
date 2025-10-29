@@ -33,6 +33,8 @@ def ensure_session(url: str, app: str, user: str, sid: str, state: dict | None):
 # ---------------- UI ----------------
 st.set_page_config(page_title="Agentic - Vendedor de Seguros")
 st.subheader("Agentic - Vendedor de Seguros")
+st.caption("""Powered by AWS.""")
+st.markdown("---")
 
 # Session ID nuevo por sesión (reload de navegador = nueva sesión)
 if "session_id" not in st.session_state:
@@ -96,3 +98,9 @@ if prompt:
             out = str(e)
         st.markdown(out or "(sin texto)")
         st.session_state.history.append(("assistant", out or ""))
+
+
+# End of Chat UI
+# Create Footer
+st.markdown("---")
+st.markdown("© 2025 JumperIA Inc. Todos los derechos reservados.")
