@@ -211,7 +211,7 @@ status_color = "#16a34a" if ONLINE else "#9ca3af"
 status_label = "Online" if ONLINE else "Offline"
 st.markdown(
     f'<div class="status-footer"><span class="status-dot" style="background:{status_color}"></span>'
-    f'<span style="color:#6b7280;font-size:0.9rem">{status_label}</span></div>',
+    f'<span style="color:#6b7280;font-size:0.9rem">{status_label}</span><span style="color:#6b7280;font-size:0.9rem">|</span><span style="color:#6b7280;font-size:0.9rem">Made by JumperIA</span></div>',
     unsafe_allow_html=True,
 )
 
