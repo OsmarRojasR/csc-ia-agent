@@ -30,11 +30,65 @@ def ensure_session(url: str, app: str, user: str, sid: str, state: dict | None):
         return r2.json()
     r.raise_for_status()
 
+
 # ---------------- UI ----------------
 st.set_page_config(page_title="Agentic - Vendedor de Seguros")
-st.subheader("Agentic - Vendedor de Seguros")
-st.caption("""Powered by AWS.""")
-st.markdown("---")
+
+# CSS: estructura en 3 filas y footer fijo al fondo
+st.markdown(
+    """
+    <style>
+    /* Asegura que el layout ocupe el 100% de la altura */
+    html, body, #root, .main {
+        height: 100%;
+    }
+    .app-header {
+        height: 80px;
+        display: flex;
+        align-items: center;
+        padding: 12px 16px;
+    }
+    .app-content {
+        min-height: calc(100vh - 140px); /* 80 header + 60 footer */
+        padding: 12px 16px 24px 16px;
+        box-sizing: border-box;
+    }
+    .app-footer {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        width: 100%;
+        height: 60px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px 16px;
+        box-shadow: 0 -1px 0 rgba(0,0,0,0.06);
+        background: white;
+        z-index: 9999;
+        color: #6b7280;
+        font-size: 0.95rem;
+    }
+    /* Evita que el footer tape el contenido al hacer scroll */
+    .stApp > .main > div {
+        padding-bottom: 72px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+# Layout: contenedores para header / content / footer
+header = st.container()
+content = st.container()
+footer = st.container()
+
+with header:
+    st.markdown('<div class="app-header">', unsafe_allow_html=True)
+    st.subheader("Agentic - Vendedor de Seguros")
+    st.caption("Powered by AWS.")
+    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("---")
 
 # Session ID nuevo por sesión (reload de navegador = nueva sesión)
 if "session_id" not in st.session_state:
@@ -81,26 +135,33 @@ def run_once(text: str) -> str:
     r.raise_for_status()
     return _parse_events(r.json())
 
-# --------------- Chat ---------------
-prompt = st.chat_input("Escribe tu mensaje")
-# End of Chat UI
-# Create Footer
-st.markdown("---")
-st.markdown("© 2025 JumperIA Inc. Todos los derechos reservados.")
+# --------------- Chat (dentro del contenido) ---------------
+with content:
+    st.markdown('<div class="app-content">', unsafe_allow_html=True)
 
-if prompt:
-    st.session_state.history.append(("user", prompt))
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    prompt = st.chat_input("Escribe tu mensaje")
 
-    with st.chat_message("assistant"):
-        try:
-            out = run_once(prompt)
-        except requests.HTTPError as e:
-            out = f"HTTP {e.response.status_code}: {e.response.text}"
-        except Exception as e:
-            out = str(e)
-        st.markdown(out or "(sin texto)")
-        st.session_state.history.append(("assistant", out or ""))
+    if prompt:
+        st.session_state.history.append(("user", prompt))
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            try:
+                out = run_once(prompt)
+            except requests.HTTPError as e:
+                out = f"HTTP {e.response.status_code}: {e.response.text}"
+            except Exception as e:
+                out = str(e)
+            st.markdown(out or "(sin texto)")
+            st.session_state.history.append(("assistant", out or ""))
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+with footer:
+    # Footer con información y session id para debugging/UX
+    footer_html = f'<div class="app-footer">Built with Agentic · Powered by AWS · session: {session_id}</div>'
+    st.markdown(footer_html, unsafe_allow_html=True)
+
 
 
