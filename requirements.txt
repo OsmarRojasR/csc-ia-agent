@@ -9,6 +9,7 @@ fastapi
 uvicorn
 twilio
 google-genai
+streamlit==1.39.0
 
 absolufy-imports==0.3.1
 adk==0.0.5
