@@ -43,7 +43,7 @@ st.markdown(
         height: 100%;
     }
     .app-header {
-        height: 30px;
+        height: -50px;
         display: flex;
         align-items: center;
         padding: 12px 16px;
