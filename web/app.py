@@ -49,7 +49,7 @@ st.markdown(
         padding: 12px 16px;
     }
     .app-content {
-        min-height: calc(100vh - 140px); /* 80 header + 60 footer */
+        min-height: calc(80vh - 140px); /* 80 header + 60 footer */
         padding: 12px 16px 24px 16px;
         box-sizing: border-box;
     }
