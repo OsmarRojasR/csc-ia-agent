@@ -83,6 +83,10 @@ def run_once(text: str) -> str:
 
 # --------------- Chat ---------------
 prompt = st.chat_input("Escribe tu mensaje")
+# End of Chat UI
+# Create Footer
+st.markdown("---")
+st.markdown("© 2025 JumperIA Inc. Todos los derechos reservados.")
 
 if prompt:
     st.session_state.history.append(("user", prompt))
@@ -100,7 +104,3 @@ if prompt:
         st.session_state.history.append(("assistant", out or ""))
 
 
-# End of Chat UI
-# Create Footer
-st.markdown("---")
-st.markdown("© 2025 JumperIA Inc. Todos los derechos reservados.")
