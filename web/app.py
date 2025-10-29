@@ -43,13 +43,13 @@ st.markdown(
         height: 100%;
     }
     .app-header {
-        height: 80px;
+        height: 30px;
         display: flex;
         align-items: center;
         padding: 12px 16px;
     }
     .app-content {
-        min-height: calc(80vh - 140px); /* 80 header + 60 footer */
+        min-height: calc(70vh - 140px); /* 80 header + 60 footer */
         padding: 12px 16px 24px 16px;
         box-sizing: border-box;
     }
