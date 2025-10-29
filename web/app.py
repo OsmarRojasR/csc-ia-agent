@@ -38,6 +38,10 @@ st.set_page_config(page_title="Agentic - Vendedor de Seguros")
 st.markdown(
     """
     <style>
+    /* Oculta la toolbar y footer por defecto de Streamlit */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
     /* Asegura que el layout ocupe el 100% de la altura */
     html, body, #root, .main {
         height: 100%;
