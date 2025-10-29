@@ -1,6 +1,7 @@
 import os
 import json
 import uuid
+import base64
 import requests
 import streamlit as st
 try:
@@ -39,7 +40,7 @@ def ensure_session(url: str, app: str, user: str, sid: str, state: dict | None):
 
 
 # ---------------- UI ----------------
-st.set_page_config(page_title="Agentic - Vendedor de Seguros", page_icon="🛡️", menu_items={"Get Help": None, "Report a Bug": None, "About": "Agentic - Vendedor de Seguros",})
+st.set_page_config(page_title="Agentic - Vendedor de Seguros", layout="wide", page_icon="🛡️", menu_items={"Get Help": None, "Report a Bug": None, "About": "Agentic - Vendedor de Seguros",})
 
 # Footer de estado (icono) y ajuste para que el input no se superponga
 st.markdown(
@@ -93,10 +94,90 @@ if logo_path.exists():
     except Exception:
         pass
 
-# Encabezado simple dentro del body
-st.subheader("Agentic - Vendedor de Seguros")
-st.caption("Powered by AWS")
-st.markdown("---")
+# Hero con imagen de fondo y textos superpuestos (header y caption encima de la imagen)
+# Intentamos cargar una imagen para el hero: assets/hero.jpg|png o sunrise.jpg junto a este archivo.
+def _encode_image(path: Path):
+        try:
+                mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+                with open(path, "rb") as f:
+                        b64 = base64.b64encode(f.read()).decode("ascii")
+                return mime, b64
+        except Exception:
+                return None
+
+hero_img = None
+for candidate in [
+        Path(__file__).parent / "assets" / "hero.jpg",
+        Path(__file__).parent / "assets" / "hero.png",
+        Path(__file__).parent / "sunrise.jpg",
+]:
+        if candidate.exists():
+                hero_img = _encode_image(candidate)
+                if hero_img:
+                        break
+
+# Estilos del hero y render del bloque con overlay
+st.markdown(
+        f"""
+        <style>
+            .hero {{
+                position: relative;
+                width: 100%;
+                min-height: 40px;
+                border-radius: 16px;
+                overflow: hidden;
+                margin: -100px 0 20px 0;
+                box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+                backdrop-filter: blur(6px);
+            }}
+            .hero::before {{
+                content: "";
+                position: absolute; inset: 0;
+                background: {'linear-gradient(180deg, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0.35) 100%), ' if hero_img else ''}url('{"data:" + hero_img[0] + ";base64," + hero_img[1] if hero_img else ""}');
+                background-size: cover; background-position: center;
+                filter: { 'none' if hero_img else 'brightness(0.95)' };
+            }}
+            .hero-overlay {{
+                position: relative;
+                z-index: 1;
+                display: flex; flex-direction: column;
+                align-items: center; justify-content: center;
+                text-align: center;
+                color: white;
+                height: 100%;
+                padding: 36px 16px;
+            }}
+            .hero h1 {{
+                margin: 0 0 6px 0;
+                font-size: clamp(1.4rem, 2.2vw + 1rem, 2.2rem);
+                line-height: 1;
+                font-weight: 700;
+                text-shadow: 0 2px 8px rgba(0,0,0,0.35);
+            }}
+            .hero .caption {{
+                margin: 0;
+                font-size: clamp(0.7rem, 1vw + 0.6rem, 1.05rem);
+                opacity: 0.95;
+                text-shadow: 0 1px 4px rgba(0,0,0,0.35);
+            }}
+            /* Fallback si no hay imagen: degradado */
+            {'' if hero_img else '.hero::before { background: linear-gradient(120deg, #4f46e5 0%, #7c3aed 100%); }'}
+        </style>
+        """,
+        unsafe_allow_html=True,
+)
+
+st.markdown(
+        """
+        <div class="hero">
+            <div class="hero-overlay">
+                <h1>Agentic - Vendedor de Seguros</h1>
+                <p class="caption">Powered by AWS</p>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+)
 
 # Contenido principal
 content = st.container()
